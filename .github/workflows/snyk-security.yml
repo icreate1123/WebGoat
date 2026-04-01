@@ -1,0 +1,83 @@
+name: Snyk Security Scans
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  sca:
+    name: Snyk SCA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Install Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk Open Source scan
+        id: sca
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk test \
+            --file=pom.xml \
+            --sarif-file-output=snyk-sca.sarif \
+            --severity-threshold=high
+
+      - name: Upload SCA SARIF
+        if: always() && hashFiles('snyk-sca.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-sca.sarif
+
+      - name: Fail if SCA found issues
+        if: steps.sca.outcome == 'failure'
+        run: exit 1
+
+  sast_secrets:
+    name: Snyk SAST + Secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk Code scan
+        id: code
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk code test \
+            --sarif-file-output=snyk-code.sarif \
+            --severity-threshold=high
+
+      - name: Upload Code SARIF
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
+
+      - name: Fail if SAST/secrets found issues
+        if: steps.code.outcome == 'failure'
+        run: exit 1
