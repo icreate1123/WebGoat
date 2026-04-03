@@ -1,0 +1,83 @@
+name: Snyk CLI Cached Scans
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+  SNYK_CACHE_REV: "1"
+
+jobs:
+  snyk-cached:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Restore cached Snyk CLI
+        id: cache-snyk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/snyk-cli
+          key: ${{ runner.os }}-snyk-cli-${{ env.SNYK_CACHE_REV }}
+          restore-keys: |
+            ${{ runner.os }}-snyk-cli-
+
+      - name: Download Snyk CLI if not cached
+        run: |
+          mkdir -p ~/.cache/snyk-cli
+          if [ ! -x ~/.cache/snyk-cli/snyk ]; then
+            curl --compressed -L https://downloads.snyk.io/cli/stable/snyk-linux -o ~/.cache/snyk-cli/snyk
+            chmod +x ~/.cache/snyk-cli/snyk
+          fi
+          echo "$HOME/.cache/snyk-cli" >> $GITHUB_PATH
+
+      - name: Verify Snyk CLI
+        run: snyk --version
+
+      - name: Run SCA
+        id: sca
+        continue-on-error: true
+        run: |
+          snyk test \
+            --file=pom.xml \
+            --sarif-file-output=snyk-sca.sarif \
+            --severity-threshold=high
+
+      - name: Run SAST + secrets
+        id: code
+        continue-on-error: true
+        run: |
+          snyk code test \
+            --sarif-file-output=snyk-code.sarif \
+            --severity-threshold=high
+
+      - name: Upload SCA SARIF
+        if: always() && hashFiles('snyk-sca.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-sca.sarif
+
+      - name: Upload Code SARIF
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
+
+      - name: Fail if scan found issues
+        if: steps.sca.outcome == 'failure' || steps.code.outcome == 'failure'
+        run: exit 1
